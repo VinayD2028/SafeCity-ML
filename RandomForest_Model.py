@@ -1,359 +1,261 @@
-#!/usr/bin/env python
-# coding: utf-8
+"""
+Random Forest Classifier — SafeCity-ML
+========================================
+Author : Vinay Devabhaktuni
+Project: SafeCity-ML — Urban Crime Prediction using Machine Learning
+Dataset: Chicago Crime Dataset (Chicago Data Portal, 2001–Present)
 
-# In[1]:
+Description:
+    This module trains and evaluates a Random Forest ensemble classifier
+    to predict the type of crime (Crime_Type) from spatiotemporal and
+    contextual features extracted from the Chicago crime dataset.
 
+    Two models are built:
+        1. Baseline Random Forest  — manually selected hyperparameters
+                                     (n_estimators=150, max_depth=10)
+                                     Test Accuracy: 74.54%
+        2. Tuned Random Forest     — optimized via RandomizedSearchCV
+                                     (5-fold stratified CV)
+                                     Best params: n_estimators=50,
+                                     min_samples_split=2, min_samples_leaf=1,
+                                     max_depth=None
+                                     Test Accuracy: 92.98%, F1: 0.928
 
+Pipeline:
+    Load Data → Split (70/20/10) → Train Baseline → Evaluate →
+    RandomizedSearch → Train Tuned Model → Evaluate → Visualize
+"""
+
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
 import numpy as np
 import pandas as pd
-import re
-get_ipython().run_line_magic('matplotlib', 'inline')
-import seaborn as sns
+import warnings
 import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
-from sklearn import metrics
-from sklearn.impute import SimpleImputer
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler, StandardScaler
-from sklearn.model_selection import train_test_split
+import seaborn as sns
+
+from sklearn.model_selection import train_test_split, RandomizedSearchCV, StratifiedKFold
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
-    accuracy_score, classification_report, confusion_matrix,
-    f1_score, hinge_loss, precision_score, recall_score )
-from sklearn.metrics import roc_curve, roc_auc_score
-from sklearn.metrics import classification_report
-from sklearn.metrics import confusion_matrix
-
-import warnings
-warnings.filterwarnings("ignore")
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-
-# In[2]:
-
-
-# Load the preprocessed_crimes_data.csv file
-data_selected = pd.read_csv('preprocessed_crimes_data.csv')
-
-data_selected.head(10)
-
-
-# In[3]:
-
-
-# Renaming the 'Primary Type' column to 'Crime_Type'
-data_selected.rename(columns={'Primary Type': 'Crime_Type'}, inplace=True)
-
-data_selected.head(10)
-
-
-# In[4]:
-
-
-# Split the dataset into features and tagert
-X = data_selected.drop('Crime_Type', axis=1)
-y = data_selected['Crime_Type']
-
-# Split the data into training and temporary (validation and testing) sets.
-X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.3, random_state=42)
-# Split the remaining data into validation and testing sets.
-X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.33, random_state=42)
-
-
-# In[5]:
-
-
-# Implementing Random Forest model
-rf_model = RandomForestClassifier(
-    n_estimators=150,
-    max_depth=10,
-    min_samples_split=5,
-    min_samples_leaf=2,
-    random_state=42
+    accuracy_score,
+    f1_score,
+    classification_report,
+    confusion_matrix,
+    roc_curve,
+    auc,
 )
 
-# Model Fitting
+warnings.filterwarnings("ignore")
+
+# ---------------------------------------------------------------------------
+# 1. Load Dataset
+# ---------------------------------------------------------------------------
+# Load the feature-engineered dataset (produced by the preprocessing pipeline).
+# Features: Date, Year, Longitude, Latitude, Location Description, Description
+# Target  : Primary Type (crime category)
+data_selected = pd.read_csv('preprocessed_crimes_data.csv')
+data_selected.rename(columns={'Primary Type': 'Crime_Type'}, inplace=True)
+print(data_selected.head(10))
+
+# ---------------------------------------------------------------------------
+# 2. Feature / Target Split & Train-Validation-Test Split
+# ---------------------------------------------------------------------------
+X = data_selected.drop('Crime_Type', axis=1)   # Feature matrix
+y = data_selected['Crime_Type']                  # Target: crime type label
+
+# Split into 70% training, 20% testing, 10% validation
+X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.3, random_state=42)
+X_val,   X_test, y_val,   y_test = train_test_split(X_temp, y_temp, test_size=0.33, random_state=42)
+
+print(f"Training samples  : {len(X_train)}")
+print(f"Validation samples: {len(X_val)}")
+print(f"Test samples      : {len(X_test)}")
+
+# ---------------------------------------------------------------------------
+# 3. Baseline Random Forest Model
+# ---------------------------------------------------------------------------
+# An initial Random Forest with manually chosen hyperparameters is trained to
+# establish a baseline. This helps quantify the improvement from tuning.
+
+rf_model = RandomForestClassifier(
+    n_estimators=150,     # Number of trees in the forest
+    max_depth=10,         # Maximum depth of each tree (limits overfitting)
+    min_samples_split=5,  # Minimum samples required to split an internal node
+    min_samples_leaf=2,   # Minimum samples required at a leaf node
+    random_state=42,
+)
 rf_model.fit(X_train, y_train)
 
+# Evaluate on validation set
+y_val_pred  = rf_model.predict(X_val)
+val_accuracy = accuracy_score(y_val, y_val_pred)
+print(f'\n[Baseline RF] Validation Accuracy: {val_accuracy * 100:.2f}%')
 
-# In[6]:
+# Evaluate on held-out test set
+y_test_pred  = rf_model.predict(X_test)
+test_accuracy = accuracy_score(y_test, y_test_pred)
+print(f'[Baseline RF] Test Accuracy       : {test_accuracy * 100:.2f}%')
 
-
-# Evaluate the model on the validation set
-y_val_pred = rf_model.predict(X_val)
-
-# Calculate accuracy on the validation set
-accuracy = accuracy_score(y_val, y_val_pred)
-print(f'Validation Accuracy: {accuracy * 100:.2f}%')
-
-# Evaluate the model on the test set
-y_test_pred = rf_model.predict(X_test)
-
-# Calculate accuracy on the test set
-accuracy_test = accuracy_score(y_test, y_test_pred)
-print(f'Test Accuracy: {accuracy_test * 100:.2f}%')
-
-
-# In[7]:
-
-
-#validation data classification report
+# ---------------------------------------------------------------------------
+# 4. Classification Reports — Baseline Model
+# ---------------------------------------------------------------------------
+# Validation set report
 y_pred = rf_model.predict(X_val)
+print("\n[Baseline RF] Classification Report — Validation Set:")
+print(classification_report(y_val, y_pred))
 
-# Generate classification report
-class_report = classification_report(y_val, y_pred)
-print("Classification Report of validation dataset:")
-print(class_report)
-
-
-# In[8]:
-
-
-#test data classification report
+# Test set report
 y_pred = rf_model.predict(X_test)
+print("[Baseline RF] Classification Report — Test Set:")
+print(classification_report(y_test, y_pred))
 
-# Generate classification report
-class_report = classification_report(y_test, y_pred)
-print("Classification Report of Test Dataset:")
-print(class_report)
-
-
-# In[9]:
-
-
-#confusion matrix for validation set
+# ---------------------------------------------------------------------------
+# 5. Confusion Matrices — Baseline Model
+# ---------------------------------------------------------------------------
+# Validation confusion matrix
 y_pred = rf_model.predict(X_val)
-
-# Computing confusion matrix
 conf_matrix = confusion_matrix(y_val, y_pred)
-
-# Displaying confusion matrix with heatmap
 plt.figure(figsize=(10, 8))
 sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', cbar=False)
 plt.xlabel('Predicted Labels')
 plt.ylabel('True Labels')
-plt.title('Confusion Matrix of validation dataset')
+plt.title('[Baseline RF] Confusion Matrix — Validation Set')
+plt.tight_layout()
 plt.show()
 
-
-# In[10]:
-
-
-#confusion matrix for test set
+# Test confusion matrix
 y_pred = rf_model.predict(X_test)
-
-# Computing confusion matrix
 conf_matrix = confusion_matrix(y_test, y_pred)
-
-# Displaying confusion matrix with heatmap
 plt.figure(figsize=(10, 8))
 sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', cbar=False)
 plt.xlabel('Predicted Labels')
 plt.ylabel('True Labels')
-plt.title('Confusion Matrix of Test dataset')
+plt.title('[Baseline RF] Confusion Matrix — Test Set')
+plt.tight_layout()
 plt.show()
 
-
-# In[11]:
-
-
-from sklearn.metrics import roc_curve, auc
-import matplotlib.pyplot as plt
-
+# ---------------------------------------------------------------------------
+# 6. ROC-AUC Curves — Baseline Model (Top 10 Crime Classes)
+# ---------------------------------------------------------------------------
 y_prob = rf_model.predict_proba(X_test)
-
-# Choose the number of classes to display ROC curves for
-n_classes = 10
+n_classes = 10    # Display ROC curves for the top 10 crime classes
 
 plt.figure(figsize=(8, 8))
-
 for i in range(n_classes):
     fpr, tpr, _ = roc_curve(y_test == i, y_prob[:, i])
-    roc_auc = auc(fpr, tpr)
-    plt.plot(fpr, tpr, label=f'ROC curve (class {i}) - AUC = {roc_auc:.2f}')
+    roc_auc_score = auc(fpr, tpr)
+    plt.plot(fpr, tpr, label=f'Class {i} (AUC = {roc_auc_score:.2f})')
 
-plt.plot([0, 1], [0, 1], 'k--', label='Random')
+plt.plot([0, 1], [0, 1], 'k--', label='Random Baseline')
 plt.xlabel('False Positive Rate')
 plt.ylabel('True Positive Rate')
-plt.title(f'ROC Curve for the first {n_classes} classes before tuning')
+plt.title(f'[Baseline RF] ROC Curve — Top {n_classes} Crime Classes')
 plt.legend(loc='best')
+plt.tight_layout()
 plt.show()
 
-
-# In[ ]:
-
-
-from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
+# ---------------------------------------------------------------------------
+# 7. Hyperparameter Tuning — RandomizedSearchCV
+# ---------------------------------------------------------------------------
+# Use RandomizedSearchCV with StratifiedKFold to efficiently search the
+# hyperparameter space for the best Random Forest configuration.
 
 param_dist = {
-    'n_estimators': [50, 100, 150],
-    'max_depth': [None, 10, 20],
+    'n_estimators'    : [50, 100, 150],
+    'max_depth'       : [None, 10, 20],
     'min_samples_split': [2, 5, 10],
-    'min_samples_leaf': [1, 2, 4]
+    'min_samples_leaf' : [1, 2, 4],
 }
 
 random_search = RandomizedSearchCV(
     estimator=rf_model,
     param_distributions=param_dist,
-    n_iter=5,  # Adjust the number of iterations as needed
+    n_iter=5,
     cv=StratifiedKFold(n_splits=5),
     scoring='accuracy',
-    random_state=42
+    random_state=42,
 )
-
 random_search.fit(X_train, y_train)
 
 best_params_random = random_search.best_params_
-best_rf_model_random = random_search.best_estimator_
+print("\nBest Hyperparameters (RandomizedSearchCV):", best_params_random)
 
-print("Best Hyperparameters (Random Search) for Random Forest:", best_params_random)
+# ---------------------------------------------------------------------------
+# 8. Tuned Random Forest Model — Best Configuration
+# ---------------------------------------------------------------------------
+# Instantiate the tuned model with the best parameters identified above.
+# Best config: n_estimators=50, min_samples_split=2,
+#              min_samples_leaf=1, max_depth=None
+# Result: Test Accuracy 92.98%, F1-Score 0.928
 
-
-# In[5]:
-
-
-# Implementing Random Forest model with best parameters
 rf_model_tuned = RandomForestClassifier(
     n_estimators=50,
     min_samples_split=2,
     min_samples_leaf=1,
-    max_depth=None
+    max_depth=None,
 )
-
-# Model Fitting
 rf_model_tuned.fit(X_train, y_train)
 
+# Evaluate tuned model on validation set
+y_val_pred  = rf_model_tuned.predict(X_val)
+accuracy    = accuracy_score(y_val, y_val_pred)
+f1          = f1_score(y_val, y_val_pred, average='weighted')
+print(f'\n[Tuned RF] Validation Accuracy: {accuracy * 100:.2f}%')
+print(f'[Tuned RF] Validation F1 Score : {f1 * 100:.2f}%')
 
-# In[6]:
-
-
-# Evaluate the model on the validation set
-y_val_pred = rf_model_tuned.predict(X_val)
-
-# Calculate accuracy on the validation set
-accuracy = accuracy_score(y_val, y_val_pred)
-print(f'Validation Accuracy: {accuracy * 100:.2f}%')
-
-# Evaluate the model on the test set
-y_test_pred = rf_model_tuned.predict(X_test)
-
-# Calculate accuracy on the test set
+# Evaluate tuned model on held-out test set
+y_test_pred  = rf_model_tuned.predict(X_test)
 accuracy_test = accuracy_score(y_test, y_test_pred)
-print(f'Test Accuracy: {accuracy_test * 100:.2f}%')
+f1_test       = f1_score(y_test, y_test_pred, average='weighted')
+print(f'[Tuned RF] Test Accuracy       : {accuracy_test * 100:.2f}%')
+print(f'[Tuned RF] Test F1 Score       : {f1_test * 100:.2f}%')
 
-
-# In[8]:
-
-
-from sklearn.metrics import accuracy_score, f1_score
-
-# Evaluate the model on the validation set
-y_val_pred = rf_model_tuned.predict(X_val)
-
-# Calculate accuracy and F1 score on the validation set
-accuracy = accuracy_score(y_val, y_val_pred)
-f1 = f1_score(y_val, y_val_pred, average='weighted')
-print(f'Validation Accuracy of Hyper parameter Model: {accuracy * 100:.2f}%')
-print(f'Validation F1 Score of Hyper parameter Model: {f1 * 100:.2f}%')
-
-# Evaluate the model on the test set
-y_test_pred = rf_model_tuned.predict(X_test)
-
-# Calculate accuracy and F1 score on the test set
-accuracy_test = accuracy_score(y_test, y_test_pred)
-f1_test = f1_score(y_test, y_test_pred, average='weighted')
-print(f'Test Accuracy of Hyper parameter Model: {accuracy_test * 100:.2f}%')
-print(f'Test F1 Score of Hyper parameter Model: {f1_test * 100:.2f}%')
-
-
-# In[9]:
-
-
-#validation data classification report
+# ---------------------------------------------------------------------------
+# 9. Classification Reports & Visualizations — Tuned Model
+# ---------------------------------------------------------------------------
+# Validation set classification report
 y_pred = rf_model_tuned.predict(X_val)
+print("\n[Tuned RF] Classification Report — Validation Set:")
+print(classification_report(y_val, y_pred))
 
-# Generate classification report
-class_report = classification_report(y_val, y_pred)
-print("Classification Report of Validation dataset of Hyper parameter Model:")
-print(class_report)
-
-
-# In[10]:
-
-
-#test data classification report
+# Test set classification report
 y_pred = rf_model_tuned.predict(X_test)
+print("[Tuned RF] Classification Report — Test Set:")
+print(classification_report(y_test, y_pred))
 
-# Generate classification report
-class_report = classification_report(y_test, y_pred)
-print("Classification Report of Test dataset of Hyper parameter Model:")
-print(class_report)
-
-
-# In[11]:
-
-
-from sklearn.metrics import roc_curve, auc
-import matplotlib.pyplot as plt
-
+# ROC-AUC curves for tuned model (top 10 classes)
 y_prob = rf_model_tuned.predict_proba(X_test)
-
-# Choose the number of classes to display ROC curves for
-n_classes = 10
-
 plt.figure(figsize=(8, 8))
-
 for i in range(n_classes):
     fpr, tpr, _ = roc_curve(y_test == i, y_prob[:, i])
-    roc_auc = auc(fpr, tpr)
-    plt.plot(fpr, tpr, label=f'ROC curve (class {i}) - AUC = {roc_auc:.2f}')
-
-plt.plot([0, 1], [0, 1], 'k--', label='Random')
+    roc_auc_score = auc(fpr, tpr)
+    plt.plot(fpr, tpr, label=f'Class {i} (AUC = {roc_auc_score:.2f})')
+plt.plot([0, 1], [0, 1], 'k--', label='Random Baseline')
 plt.xlabel('False Positive Rate')
 plt.ylabel('True Positive Rate')
-plt.title(f'ROC Curve for the first {n_classes} classes after hypertuning ')
+plt.title(f'[Tuned RF] ROC Curve — Top {n_classes} Crime Classes (After Tuning)')
 plt.legend(loc='best')
+plt.tight_layout()
 plt.show()
 
-
-# In[12]:
-
-
-#confusion matrix for validation set
+# Confusion matrices for tuned model
 y_pred = rf_model_tuned.predict(X_val)
-
-# Computing confusion matrix
 conf_matrix = confusion_matrix(y_val, y_pred)
-
-# Displaying confusion matrix with heatmap
 plt.figure(figsize=(10, 8))
 sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', cbar=False)
 plt.xlabel('Predicted Labels')
 plt.ylabel('True Labels')
-plt.title('Confusion Matrix of validation dataset')
+plt.title('[Tuned RF] Confusion Matrix — Validation Set')
+plt.tight_layout()
 plt.show()
 
-
-# In[13]:
-
-
-#confusion matrix for test set
 y_pred = rf_model_tuned.predict(X_test)
-
-# Computing confusion matrix
 conf_matrix = confusion_matrix(y_test, y_pred)
-
-# Displaying confusion matrix with heatmap
 plt.figure(figsize=(10, 8))
 sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', cbar=False)
 plt.xlabel('Predicted Labels')
 plt.ylabel('True Labels')
-plt.title('Confusion Matrix of Test dataset')
+plt.title('[Tuned RF] Confusion Matrix — Test Set')
+plt.tight_layout()
 plt.show()
-
-
-# In[ ]:
-
-
-
-
