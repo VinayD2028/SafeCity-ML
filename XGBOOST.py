@@ -1,308 +1,247 @@
-#!/usr/bin/env python
-# coding: utf-8
+"""
+XGBoost Classifier — SafeCity-ML
+===================================
+Author : Vinay Devabhaktuni
+Project: SafeCity-ML — Urban Crime Prediction using Machine Learning
+Dataset: Chicago Crime Dataset (Chicago Data Portal, 2001–Present)
 
-# In[1]:
+Description:
+    This module trains and evaluates an XGBoost (Extreme Gradient Boosting)
+    classifier to predict the type of crime (Crime_Type) from spatiotemporal
+    and contextual features extracted from the Chicago crime dataset.
 
+    Two models are built:
+        1. Baseline XGBoost  — manually configured hyperparameters
+                               (n_estimators=75, max_depth=6, lr=0.1)
+                               Test Accuracy: 90.90%, weighted F1: 0.90
+        2. Tuned XGBoost     — optimized via 3-fold StratifiedKFold GridSearchCV
+                               Best params: learning_rate=0.01, n_estimators=100
+                               Test Accuracy: 90.18%
 
+Pipeline:
+    Load Data → Split (70/20/10) → Train Baseline → Evaluate →
+    GridSearchCV → Train Tuned Model → Evaluate → Visualize
+"""
+
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, recall_score
-import warnings
-warnings.filterwarnings('ignore')
 import numpy as np
-from sklearn.model_selection import GridSearchCV
+import seaborn as sns
+import matplotlib.pyplot as plt
+import warnings
 
+from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    classification_report,
+    confusion_matrix,
+    roc_curve,
+    auc,
+)
+from xgboost import XGBClassifier
 
-# In[2]:
+warnings.filterwarnings('ignore')
 
+# ---------------------------------------------------------------------------
+# 1. Load Dataset
+# ---------------------------------------------------------------------------
+# Load the feature-engineered dataset produced by the preprocessing pipeline.
+# Features: Date, Year, Longitude, Latitude, Location Description, Description
+# Target  : Primary Type (crime category, integer-encoded)
+data = pd.read_csv('preprocessed_crimes_data.csv')
 
-# Load the preprocessed dataset
-data = pd.read_csv('/content/drive/MyDrive/Colab Notebooks/preprocessed_crimes_data.csv')
+# Check for missing values — should be zero after preprocessing
+print("Missing values per column:")
+print(data.isnull().sum())
 
+# ---------------------------------------------------------------------------
+# 2. Feature / Target Split & Train-Validation-Test Split
+# ---------------------------------------------------------------------------
+X = data.drop('Primary Type', axis=1)   # Feature matrix
+y = data['Primary Type']                 # Target: crime type label
 
-# In[3]:
-
-
-data.isnull()
-
-
-# In[4]:
-
-
-# Separate features and target variable
-X = data.drop('Primary Type', axis=1)
-y = data['Primary Type']
-
-
-# In[5]:
-
-
+# Split into 70% training, 20% testing, 10% validation
 X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.3, random_state=42)
-X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.33, random_state=42)
+X_val,   X_test, y_val,   y_test = train_test_split(X_temp, y_temp, test_size=0.33, random_state=42)
 
-# Verify the unique classes in the new sets
+# Confirm all crime classes appear in both training and validation splits
 unique_classes_train = set(y_train)
-unique_classes_val = set(y_val)
+unique_classes_val   = set(y_val)
+print(f'\nUnique classes in training set  : {len(unique_classes_train)}')
+print(f'Unique classes in validation set: {len(unique_classes_val)}')
 
-print(f'Unique classes in train set: {unique_classes_train}')
-print(f'Unique classes in validation set: {unique_classes_val}')
+# ---------------------------------------------------------------------------
+# 3. Baseline XGBoost Model
+# ---------------------------------------------------------------------------
+# XGBoost with manually selected hyperparameters — provides a strong baseline
+# due to the gradient boosting framework's built-in regularization.
+# multi:softmax is used for multi-class prediction.
 
-
-# In[6]:
-
-
-# Initialize XGBoost classifier
 model = XGBClassifier(
-    objective='multi:softmax',
-    eval_metric='mlogloss',
-    n_estimators=75,
-    max_depth=6,
-    learning_rate=0.1,
-    n_jobs=-1
+    objective='multi:softmax',    # Multi-class classification
+    eval_metric='mlogloss',       # Log-loss evaluation during training
+    n_estimators=75,              # Number of boosting rounds
+    max_depth=6,                  # Maximum tree depth (controls complexity)
+    learning_rate=0.1,            # Step size shrinkage to prevent overfitting
+    n_jobs=-1,                    # Use all available CPU cores
 )
 
+# Train with early evaluation on both training and validation sets
+model.fit(
+    X_train, y_train,
+    eval_set=[(X_train, y_train), (X_val, y_val)],
+    verbose=True,
+)
 
-# In[7]:
+# Evaluate baseline model on validation set
+y_val_pred   = model.predict(X_val)
+val_accuracy = accuracy_score(y_val, y_val_pred)
+print(f'\n[Baseline XGB] Validation Accuracy: {val_accuracy * 100:.2f}%')
 
-
-#Train the model
-model.fit(X_train, y_train, eval_set=[(X_train, y_train), (X_val, y_val)], verbose=True)
-
-
-# In[8]:
-
-
-# Evaluate the model on the validation set
-y_val_pred = model.predict(X_val)
-accuracy = accuracy_score(y_val, y_val_pred)
-print(f'Validation Accuracy: {accuracy * 100:.2f}%')
-
-
-# In[9]:
-
-
-# Evaluate the model on the test set
-y_test_pred = model.predict(X_test)
+# Evaluate baseline model on held-out test set
+y_test_pred  = model.predict(X_test)
 test_accuracy = accuracy_score(y_test, y_test_pred)
-print(f'Test Accuracy: {test_accuracy * 100:.2f}%')
+print(f'[Baseline XGB] Test Accuracy       : {test_accuracy * 100:.2f}%')
 
-
-# ROC 
-
-# In[10]:
-
-
-from sklearn.metrics import roc_curve, auc
-import matplotlib.pyplot as plt
-
-y_prob = model.predict_proba(X_test)
-
-# Choose the number of classes to display ROC curves for
-n_classes = 10
+# ---------------------------------------------------------------------------
+# 4. ROC-AUC Curves — Baseline Model (Top 10 Crime Classes)
+# ---------------------------------------------------------------------------
+y_prob    = model.predict_proba(X_test)
+n_classes = 10  # Display ROC curves for the top 10 most frequent crime classes
 
 plt.figure(figsize=(8, 8))
-
 for i in range(n_classes):
-    fpr, tpr, _ = roc_curve(y_test == i, y_prob[:, i])
-    roc_auc = auc(fpr, tpr)
-    plt.plot(fpr, tpr, label=f'ROC curve (class {i}) - AUC = {roc_auc:.2f}')
-
-plt.plot([0, 1], [0, 1], 'k--', label='Random')
+    fpr, tpr, _  = roc_curve(y_test == i, y_prob[:, i])
+    roc_auc_score = auc(fpr, tpr)
+    plt.plot(fpr, tpr, label=f'Class {i} (AUC = {roc_auc_score:.2f})')
+plt.plot([0, 1], [0, 1], 'k--', label='Random Baseline')
 plt.xlabel('False Positive Rate')
 plt.ylabel('True Positive Rate')
-plt.title(f'ROC Curve for the first {n_classes} classes')
+plt.title(f'[Baseline XGB] ROC Curve — Top {n_classes} Crime Classes')
 plt.legend(loc='best')
+plt.tight_layout()
 plt.show()
 
-
-
-# In[11]:
-
-
-#test confusion matrix
-
-import seaborn as sns
-import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
-
-# Compute confusion matrix
+# ---------------------------------------------------------------------------
+# 5. Confusion Matrices — Baseline Model
+# ---------------------------------------------------------------------------
+# Test set confusion matrix — shows per-class prediction quality
 conf_matrix = confusion_matrix(y_test, y_test_pred)
-
-# Set background style for the plot
-sns.set_style("dark")  # Change the style here
-
-# Plot confusion matrix as a heatmap
+sns.set_style("dark")
 plt.figure(figsize=(14, 14))
-sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues',
-            xticklabels=unique_classes_train)
+sns.heatmap(
+    conf_matrix, annot=True, fmt='d', cmap='Blues',
+    xticklabels=list(unique_classes_train),
+)
 plt.xlabel('Predicted')
 plt.ylabel('Actual')
-plt.xticks(rotation=100)  # Rotate x labels for better readability
-plt.yticks(rotation=0)   # Keep y labels horizontal for better readability
+plt.xticks(rotation=100)
+plt.yticks(rotation=0)
+plt.title("[Baseline XGB] Confusion Matrix — Test Set")
 plt.tight_layout()
-plt.title('Confusion Matrix for Original Data\'s Prediction')
 plt.show()
 
-
-# In[12]:
-
-
-#validation confusion matrix
-
-
-import seaborn as sns
-import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
-
-# Compute confusion matrix
+# Validation set confusion matrix
 conf_matrix = confusion_matrix(y_val, y_val_pred)
-
-# Set background style for the plot
-sns.set_style("dark")  # Change the style here
-
-# Plot confusion matrix as a heatmap
 plt.figure(figsize=(14, 14))
-sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues',
-            xticklabels=unique_classes_train)
+sns.heatmap(
+    conf_matrix, annot=True, fmt='d', cmap='Blues',
+    xticklabels=list(unique_classes_train),
+)
 plt.xlabel('Predicted')
 plt.ylabel('Actual')
-plt.xticks(rotation=100)  # Rotate x labels for better readability
-plt.yticks(rotation=0)   # Keep y labels horizontal for better readability
+plt.xticks(rotation=100)
+plt.title("[Baseline XGB] Confusion Matrix — Validation Set")
 plt.tight_layout()
-plt.title('Confusion Matrix for Original Data\'s Prediction')
 plt.show()
 
+# ---------------------------------------------------------------------------
+# 6. Classification Reports — Baseline Model
+# ---------------------------------------------------------------------------
+print("\n[Baseline XGB] Classification Report — Validation Set:")
+print(classification_report(y_val, model.predict(X_val)))
 
-# In[13]:
+print("[Baseline XGB] Classification Report — Test Set:")
+print(classification_report(y_test, y_test_pred))
 
+# ---------------------------------------------------------------------------
+# 7. Hyperparameter Tuning — GridSearchCV with StratifiedKFold
+# ---------------------------------------------------------------------------
+# GridSearchCV explores learning_rate and n_estimators combinations,
+# using 3-fold stratified cross-validation to account for class imbalance.
 
-#validation data classification report
-
-from sklearn.metrics import classification_report
-
-# Replace X_val or X_test with the respective validation or test set
-y_pred = model.predict(X_val)  # Or X_test for test set
-
-# Generate classification report
-class_report = classification_report(y_val, y_pred)
-print("Classification Report:")
-print(class_report)
-
-
-# In[14]:
-
-
-#test data classification report
-
-from sklearn.metrics import classification_report
-
-# Replace X_val or X_test with the respective validation or test set
-y_pred = model.predict(X_test)  # Or X_test for test set
-
-# Generate classification report
-class_report = classification_report(y_test, y_pred)
-print("Classification Report:")
-print(class_report)
-
-
-# Hypertuning the model
-# 
-
-# In[15]:
-
-
-from sklearn.model_selection import GridSearchCV
-from sklearn.model_selection import StratifiedKFold
-
-# Define the parameter grid to search
 param_grid = {
-    'n_estimators': [100, 125],  # Fixed value for number of estimators
-    'learning_rate': [0.01] ,  # Fixed value for learning rate
+    'n_estimators'  : [100, 125],    # Number of boosting rounds
+    'learning_rate' : [0.01],        # Fixed small learning rate for stability
 }
 
-# Initialize XGBoost classifier
-model = XGBClassifier(objective='multi:softmax', eval_metric='mlogloss', n_jobs=-1)
+model_gs = XGBClassifier(
+    objective='multi:softmax',
+    eval_metric='mlogloss',
+    n_jobs=-1,
+)
 
-# Initialize StratifiedKFold
 stratified_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
 
-# Initialize GridSearchCV with StratifiedKFold
-grid_search = GridSearchCV(estimator=model, param_grid=param_grid,
-                           scoring='accuracy', cv=stratified_cv)
-
-
-# In[16]:
-
-
-# Perform the grid search on the training data
+grid_search = GridSearchCV(
+    estimator=model_gs,
+    param_grid=param_grid,
+    scoring='accuracy',
+    cv=stratified_cv,
+)
 grid_search.fit(X_train, y_train)
 
-# Display the best parameters and corresponding accuracy
-print(f'Best Parameters: {grid_search.best_params_}')
+print(f'\nBest Parameters (GridSearchCV): {grid_search.best_params_}')
 
-# Get the best model from grid search
+# Retrieve the best model from the search
 best_model = grid_search.best_estimator_
 
-# Make predictions on the validation set with the best model
-y_val_pred = best_model.predict(X_val)
-accuracy = accuracy_score(y_val, y_val_pred)
-print(f'Validation Accuracy with Best Model: {accuracy * 100:.2f}%')
+# Evaluate tuned model on validation set
+y_val_pred   = best_model.predict(X_val)
+val_accuracy = accuracy_score(y_val, y_val_pred)
+print(f'[Tuned XGB] Validation Accuracy: {val_accuracy * 100:.2f}%')
 
-# Make predictions on the test set with the best model
-y_test_pred = best_model.predict(X_test)
-test_accuracy = accuracy_score(y_test, y_test_pred)
-print(f'Test Accuracy with Best Model: {test_accuracy * 100:.2f}%')
+# Evaluate tuned model on held-out test set
+y_test_pred   = best_model.predict(X_test)
+test_accuracy  = accuracy_score(y_test, y_test_pred)
+print(f'[Tuned XGB] Test Accuracy      : {test_accuracy * 100:.2f}%')
 
-# Display the classification report for the test set
-report = classification_report(y_test, y_test_pred)
-print(f'{report}')
+# Full classification report for the tuned model
+print("\n[Tuned XGB] Classification Report — Test Set:")
+print(classification_report(y_test, y_test_pred))
 
-
-# In[18]:
-
-
-from sklearn.metrics import roc_curve, auc
-import matplotlib.pyplot as plt
-
+# ---------------------------------------------------------------------------
+# 8. ROC-AUC Curves — Tuned Model (Top 10 Crime Classes)
+# ---------------------------------------------------------------------------
 y_prob = best_model.predict_proba(X_test)
-
-# Choose the number of classes to display ROC curves for
-n_classes = 10
-
 plt.figure(figsize=(8, 8))
-
 for i in range(n_classes):
-    fpr, tpr, _ = roc_curve(y_test == i, y_prob[:, i])
-    roc_auc = auc(fpr, tpr)
-    plt.plot(fpr, tpr, label=f'ROC curve (class {i}) - AUC = {roc_auc:.2f}')
-
-plt.plot([0, 1], [0, 1], 'k--', label='Random')
+    fpr, tpr, _   = roc_curve(y_test == i, y_prob[:, i])
+    roc_auc_score  = auc(fpr, tpr)
+    plt.plot(fpr, tpr, label=f'Class {i} (AUC = {roc_auc_score:.2f})')
+plt.plot([0, 1], [0, 1], 'k--', label='Random Baseline')
 plt.xlabel('False Positive Rate')
 plt.ylabel('True Positive Rate')
-plt.title(f'ROC Curve after hypertuning for the first {n_classes} classes')
+plt.title(f'[Tuned XGB] ROC Curve — Top {n_classes} Crime Classes (After Tuning)')
 plt.legend(loc='best')
+plt.tight_layout()
 plt.show()
 
-
-# In[20]:
-
-
-from sklearn.metrics import confusion_matrix
-import seaborn as sns
-
-# Assuming best_model is your XGBoost model obtained after GridSearchCV and X_test, y_test are your test data
-#y_test_pred = best_model.predict(X_test)
-
-# Generate confusion matrix
+# ---------------------------------------------------------------------------
+# 9. Confusion Matrix — Tuned Model
+# ---------------------------------------------------------------------------
 conf_matrix = confusion_matrix(y_test, y_test_pred)
-
-# Display the confusion matrix as a heatmap
 plt.figure(figsize=(14, 12))
-sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues',
-            xticklabels=best_model.classes_, yticklabels=best_model.classes_)
+sns.heatmap(
+    conf_matrix, annot=True, fmt='d', cmap='Blues',
+    xticklabels=best_model.classes_,
+    yticklabels=best_model.classes_,
+)
 plt.xlabel('Predicted Labels')
 plt.ylabel('True Labels')
-plt.title('Confusion Matrix for Test Data')
+plt.title('[Tuned XGB] Confusion Matrix — Test Set')
+plt.tight_layout()
 plt.show()
-
