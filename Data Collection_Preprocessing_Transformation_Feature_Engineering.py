@@ -1,372 +1,281 @@
-#!/usr/bin/env python
-# coding: utf-8
+"""
+Data Collection, Preprocessing, Transformation & Feature Engineering — SafeCity-ML
+=====================================================================================
+Author : Vinay Devabhaktuni
+Project: SafeCity-ML — Urban Crime Prediction using Machine Learning
+Dataset: Chicago Crime Dataset (Chicago Data Portal, 2001–Present)
+         Source: https://data.cityofchicago.org/Public-Safety/Crimes-2001-to-Present/ijzp-q8t2
 
-# ### Importing necessary libraries
+Description:
+    This module implements the full data preparation pipeline for the SafeCity-ML
+    project. It transforms raw Chicago crime records into a clean, feature-engineered
+    dataset ready for machine learning model training.
 
-# In[1]:
+    Steps covered:
+        1. Data Collection   — Load raw CSV from the Chicago Data Portal
+        2. EDA (Raw)         — Visualize crime type distributions and community area patterns
+        3. Preprocessing     — Missing value imputation, duplicate removal
+        4. EDA (Clean)       — Post-processing visualizations
+        5. Transformation    — Label encoding of categorical features
+        6. Feature Selection — Lasso Regression (L1) + domain knowledge
+        7. Output            — Save preprocessed_crimes_data.csv for modelling
 
+    Output file: preprocessed_crimes_data.csv
+    Selected features: Date, Year, Longitude, Latitude,
+                       Location Description, Primary Type (target), Description
+"""
 
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
 import numpy as np
 import pandas as pd
 import re
-get_ipython().run_line_magic('matplotlib', 'inline')
-import seaborn as sns
+import warnings
 import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
+import seaborn as sns
+
 from sklearn import metrics
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler, StandardScaler
-import warnings
+from sklearn.linear_model import LassoCV
+
 warnings.filterwarnings("ignore")
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-
-# ## Data Collection
-
-# ## 3.2 
-# ### Define the data sources, parameters and quantity of raw datasets (0.4 point) 
-
-# In[2]:
-
-
-# Loading the dataset
+# ---------------------------------------------------------------------------
+# 1. Data Collection
+# ---------------------------------------------------------------------------
+# Load the raw Chicago crime dataset.
+# The dataset includes millions of crime incidents reported in Chicago from
+# 2001 to the present, with columns such as crime type, location, date,
+# arrest status, community area, and geographic coordinates.
 data = pd.read_csv('crime_dataset.csv')
 
-
-# In[3]:
-
-
-# Displaying information about the Dataset
+# Basic information about the raw dataset
 print(data.info())
+print("\nFirst 5 rows of raw data:")
+print(data.head(5))
+print("\nRandom sample (5 rows):")
+print(data.sample(5))
 
+# ---------------------------------------------------------------------------
+# 2. Exploratory Data Analysis (EDA) — Raw Data
+# ---------------------------------------------------------------------------
 
-# ### Collect necessary and sufficient raw datasets; Show samples from raw datasets. (0.1 point)
-
-# In[4]:
-
-
-data.head(5)
-
-
-# In[5]:
-
-
-data.sample(5)
-
-
-# ### EDA before pre-processing the data
-
-# ### 1. Crime type frequencies and Top 10 Crime types
-
-# In[6]:
-
-
-# Import necessary libraries for EDA
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-# Set the style for plots
+# ---- 2a. Crime Type Distribution ----
+# Visualize the frequency of each crime type to understand class distribution
+# before any preprocessing. Identifies dominant classes (e.g., Theft, Battery)
+# and rare ones (e.g., Ritualism, Human Trafficking).
 sns.set(style="whitegrid")
-
-# Visualize the distribution of the target variable "Primary Type"
 plt.figure(figsize=(12, 6))
-sns.countplot(x='Primary Type', data=data, order=data['Primary Type'].value_counts().index)
-plt.title('Distribution of Primary Type')
+sns.countplot(
+    x='Primary Type', data=data,
+    order=data['Primary Type'].value_counts().index
+)
+plt.title('Distribution of Crime Types (Raw Data)')
 plt.xticks(rotation=90)
+plt.tight_layout()
 plt.show()
 
-# Print the top 10 Primary Types
+# Top 10 most frequent crime types
 top_primary_types = data['Primary Type'].value_counts().nlargest(10).index
-print("Top 10 Primary Types:")
+print("\nTop 10 Crime Types (Raw):")
 print(top_primary_types)
 
+# ---------------------------------------------------------------------------
+# 3. Data Preprocessing
+# ---------------------------------------------------------------------------
 
-# ## Data Pre-processing
+# ---- 3a. Missing Value Handling ----
+# Check for missing values across all columns
+print("\nMissing values before imputation:")
+print(data.isnull().sum())
 
-# ## 3.3
-
-# ### Pre-process collected raw data with cleaning and validation tools;  (0.4 point) 
-
-# #### 1. Checking the Missing values
-
-# In[7]:
-
-
-# Checking for missing values
-print("Missing values:\n", data.isnull().sum())
-
-
-# #### 2. Handling missing values
-
-# ###  do count plot if possible
-
-# #### Imputing the missing values using mean and mode for numerical and categorical columns respectively
-
-# In[8]:
-
-
+# Impute numerical columns with column mean (preserves distribution)
 num_cols = data.select_dtypes(include=np.number).columns
-imputer = SimpleImputer(strategy='mean')
+imputer  = SimpleImputer(strategy='mean')
 data[num_cols] = imputer.fit_transform(data[num_cols])
 
+# Impute categorical columns with column mode (most frequent value)
 cat_cols = data.select_dtypes(include='object').columns
-imputer = SimpleImputer(strategy='most_frequent')
+imputer  = SimpleImputer(strategy='most_frequent')
 data[cat_cols] = imputer.fit_transform(data[cat_cols])
 
+# Confirm no remaining missing values
+print("\nMissing values after imputation:")
+print(data.isnull().sum())
 
-# In[9]:
-
-
-# Checking for missing values after imputing
-print("Missing values:\n", data.isnull().sum())
-
-
-# #### 3.Checking for Duplicate values
-
-# In[10]:
-
-
-# Checking for duplicate rows
-print("Duplicate rows:", data.duplicated().sum())
-
-# Dropping duplicate rows (if necessary)
+# ---- 3b. Duplicate Removal ----
+# Remove exact duplicate rows to avoid data leakage during model training
+print(f"\nDuplicate rows before removal: {data.duplicated().sum()}")
 data = data.drop_duplicates()
+print(f"Duplicate rows after removal : {data.duplicated().sum()}")
 
+# ---- 3c. Basic Statistics & Data Profiling ----
+print("\nBasic Statistics (Numerical Columns):")
+print(data.describe())
 
-# #### 4. Printing Basic Statistics
+# Unique values per categorical column — helps identify encoding requirements
+print("\nUnique values in categorical columns:")
+for col in data.select_dtypes(include=['object']).columns:
+    print(f"  {col}: {data[col].unique()[:5]} ...")  # Show first 5 unique values
 
-# In[11]:
+print("\nRandom sample after preprocessing:")
+print(data.sample(5))
 
+# ---------------------------------------------------------------------------
+# 4. EDA — Post-Preprocessing Visualizations
+# ---------------------------------------------------------------------------
 
-# Displaying basic statistics of the numerical columns
-print("Basic Statistics:\n", data.describe())
-
-
-# #### 5.Printing unique values in categorical columns
-
-# In[12]:
-
-
-# Displaying unique values in categorical columns
-for column in data.select_dtypes(include=['object']).columns:
-    print(f"Unique values in {column}:", data[column].unique())
-
-
-# #### Some sample of data
-
-# In[13]:
-
-
-# Displaying samples from the pre-processed dataset
-print("Samples from the pre-processed dataset:\n", data.sample(5))
-
-
-# ### Performing EDA  after pre-processing to analyze the data more
-
-# ### 1. Crime type frequencies and Top 10 Crime types
-
-# In[14]:
-
-
-# Import necessary libraries for EDA
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-# Set the style for plots
-sns.set(style="whitegrid")
-
-# Visualize the distribution of the target variable "Primary Type"
+# ---- 4a. Crime Type Distribution (Clean Data) ----
 plt.figure(figsize=(12, 6))
-sns.countplot(x='Primary Type', data=data, order=data['Primary Type'].value_counts().index)
-plt.title('Distribution of Primary Type')
+sns.countplot(
+    x='Primary Type', data=data,
+    order=data['Primary Type'].value_counts().index,
+)
+plt.title('Distribution of Crime Types (After Preprocessing)')
 plt.xticks(rotation=90)
+plt.tight_layout()
 plt.show()
 
-# Print the top 10 Primary Types
 top_primary_types = data['Primary Type'].value_counts().nlargest(10).index
-print("Top 10 Primary Types:")
+print("\nTop 10 Crime Types (Clean):")
 print(top_primary_types)
 
-
-# ### 2. Top 10 Community areas where the crime is majorly happening
-
-# In[15]:
-
-
-import matplotlib.pyplot as plt
-
-# Select the top N community areas with the highest crime frequency
+# ---- 4b. Top 10 Community Areas by Crime Volume ----
+# Stacked bar chart showing crime composition within the 10 most crime-prone
+# community areas — useful for identifying neighbourhood-level risk patterns.
 top_community_areas = data['Community Area'].value_counts().nlargest(10).index
-data_top_community_areas = data[data['Community Area'].isin(top_community_areas)]
+data_top_community  = data[data['Community Area'].isin(top_community_areas)]
 
-# Grouping data by 'Primary Type' and 'Community Area' and counting the frequency
-crime_counts_by_community = data_top_community_areas.groupby(['Community Area', 'Primary Type']).size().unstack(fill_value=0)
+crime_counts_by_community = data_top_community.groupby(
+    ['Community Area', 'Primary Type']
+).size().unstack(fill_value=0)
 
-# Plotting the bar chart
-plt.figure(figsize=(15, 8))  # Provide both width and height values
+plt.figure(figsize=(15, 8))
 crime_counts_by_community.plot(kind='bar', stacked=True, colormap='viridis')
-
-# Setting x and y labels and title for the plot
 plt.xlabel('Community Area')
-plt.ylabel('Frequency')
-plt.title('Frequency of Top Crime Types by Top 10 Community Areas')
-
-# Customizing the legend
-plt.legend(title='Primary Type', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.ylabel('Crime Frequency')
+plt.title('Crime Type Frequency by Top 10 Community Areas')
+plt.legend(title='Crime Type', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
 plt.show()
 
-
-# ### 3.Top 10 Crime types and top 10 location descriptions
-
-# In[16]:
-
-
-# Select the top N primary crime types and top N location descriptions
-top_primary_types = data['Primary Type'].value_counts().nlargest(10).index
+# ---- 4c. Top 10 Crime Types × Top 10 Location Descriptions ----
+# Reveals where specific crimes are most likely to occur
+# (e.g., theft on streets, domestic violence in residences).
 top_location_descriptions = data['Location Description'].value_counts().nlargest(10).index
+data_filtered = data[
+    data['Primary Type'].isin(top_primary_types) &
+    data['Location Description'].isin(top_location_descriptions)
+]
 
-data_top_primary_types_locations = data[data['Primary Type'].isin(top_primary_types) & data['Location Description'].isin(top_location_descriptions)]
+crime_counts_by_location = data_filtered.groupby(
+    ['Location Description', 'Primary Type']
+).size().unstack(fill_value=0)
 
-# Grouping data by 'Location Description' and 'Primary Type' and counting the frequency
-crime_counts_by_location = data_top_primary_types_locations.groupby(['Location Description', 'Primary Type']).size().unstack(fill_value=0)
-
-# Plotting the bar chart
 plt.figure(figsize=(15, 15))
 crime_counts_by_location.plot(kind='bar', stacked=True, colormap='viridis')
-
-# Setting x and y labels and title for the plot
 plt.xlabel('Location Description')
-plt.ylabel('Frequency')
-plt.title('Frequency of Top 10 Primary Crime Types within Top 10 Location Descriptions')
-
-# Customizing the legend
-plt.legend(title='Primary Type', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.ylabel('Crime Frequency')
+plt.title('Top 10 Crime Types by Top 10 Location Descriptions')
+plt.legend(title='Crime Type', bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.tight_layout()
 plt.show()
 
-
-# ## Data Transformation
-
-# ## 3.4
-
-# ### Transform pre-processed datasets to desired formats , show the related tools , scripts or formulas, methods;  (0.4 point)
-
-# In[17]:
-
-
-# Label encoding for categorical variables
+# ---------------------------------------------------------------------------
+# 5. Data Transformation — Label Encoding
+# ---------------------------------------------------------------------------
+# Convert all categorical string features to integer representations.
+# LabelEncoder maps each unique string to a unique integer consistently.
+# Required because ML models only accept numerical inputs.
 label_encoder = LabelEncoder()
 for col in cat_cols:
     data[col] = label_encoder.fit_transform(data[col])
 
+print("\nSample after label encoding:")
+print(data.head(5))
 
-# In[18]:
-
-
-data.head(5)
-
-
-# ### EDA after Label Encoding
-
-# In[19]:
-
-
-# Visualize the correlation matrix
+# ---- 5a. Correlation Heatmap (Post-Encoding) ----
+# Visualize pairwise feature correlations to identify redundant or
+# highly correlated features that may need to be removed.
 corr_matrix = data.corr()
 plt.figure(figsize=(14, 10))
 sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', fmt='.2f')
-plt.title('Correlation Matrix')
+plt.title('Feature Correlation Matrix (After Label Encoding)')
+plt.tight_layout()
 plt.show()
 
+# ---------------------------------------------------------------------------
+# 6. Feature Selection — Lasso Regression (L1 Regularization)
+# ---------------------------------------------------------------------------
+# LassoCV applies L1 regularization, which drives coefficients of less
+# informative features toward zero. Features with non-zero coefficients
+# are selected as the most predictive.
+# Cross-validated alpha selection ensures robust feature importance estimation.
 
-# ## Feature Selection and Engineering
+X = data.drop(['Primary Type'], axis=1)   # All features (excluding target)
+y = data['Primary Type']                   # Target: crime type
 
-# ### Using Lasso Regression (L1 Regularization) and Domain knowledge for feature selection
-
-# In[20]:
-
-
-from sklearn.linear_model import LassoCV
-from sklearn.preprocessing import StandardScaler
-
-X = data.drop(['Primary Type'], axis=1)
-
-# Target variable
-y = data['Primary Type']
-
-# Assuming 'X' and 'y' are your feature matrix and target variable
-scaler = StandardScaler()
+# Standardize features before Lasso (regularization is scale-sensitive)
+scaler   = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 
-# Apply L1 regularization with cross-validated selection of the best alpha
 lasso = LassoCV(cv=5)
 lasso.fit(X_scaled, y)
 
-# Get selected features with non-zero coefficients
-selected_features = X.columns[lasso.coef_ != 0]
+# Features with non-zero Lasso coefficients are considered informative
+selected_features_lasso = X.columns[lasso.coef_ != 0]
+print("\nFeatures selected by Lasso (L1):", list(selected_features_lasso))
 
-print("Selected Features:", selected_features)
-
-
-# In[21]:
-
-
-# Loading the selected features based on Lasso Regression (L1 Regularization) and Domain knowledge into a new CSV file
+# ---- 6a. Final Feature Set (Lasso + Domain Knowledge) ----
+# Combining Lasso results with domain knowledge about crime prediction,
+# the following 7 columns are selected as the final feature set:
+#   - Date, Year      : temporal context (time of crime)
+#   - Longitude, Latitude : geographic location of the crime
+#   - Location Description: type of location (street, residence, etc.)
+#   - Description     : specific sub-type of the crime
+#   - Primary Type    : TARGET variable (crime category)
 selected_features = [
-    'Date','Year','Longitude','Latitude','Location Description','Primary Type','Description'
+    'Date', 'Year', 'Longitude', 'Latitude',
+    'Location Description', 'Primary Type', 'Description',
 ]
-
 data_selected = data[selected_features]
 
-
-# In[22]:
-
-
-# Save the new CSV file as preprocessed_crimes_data.csv
+# ---------------------------------------------------------------------------
+# 7. Save Preprocessed Dataset
+# ---------------------------------------------------------------------------
+# Export the clean, feature-selected dataset as a CSV file.
+# This file is the input for all downstream model training scripts.
 data_selected.to_csv('preprocessed_crimes_data.csv', index=False)
+print("\nPreprocessed dataset saved to: preprocessed_crimes_data.csv")
 
-
-# In[23]:
-
-
-# Load the preprocessed_crimes_data.csv file
+# ---------------------------------------------------------------------------
+# 8. Reload & Validate Output Dataset
+# ---------------------------------------------------------------------------
+# Reload to confirm the saved file is correct and complete.
 data_selected = pd.read_csv('preprocessed_crimes_data.csv')
+print("\nReloaded dataset shape:", data_selected.shape)
+print(data_selected.head(10))
 
-
-# In[24]:
-
-
-data_selected.head(10)
-
-
-# In[25]:
-
-
-# Renaming the 'Primary Type' column to 'Crime_Type'
+# Rename target column for downstream consistency
 data_selected.rename(columns={'Primary Type': 'Crime_Type'}, inplace=True)
+print(data_selected.head(10))
 
+# Confirm no missing values in the final output
+print("\nMissing values in final dataset:")
+print(data_selected.isnull().sum())
 
-# In[26]:
-
-
-data_selected.head(10)
-
-
-# In[27]:
-
-
-# Checking for missing values after feature engineering
-print("Missing values:\n", data_selected.isnull().sum())
-
-
-# ## Data Preparation
-
-# ### 3.5
-
-# #### Preparing Training, Validation and testing datasets from Transformed dataset (preprocessed_crimes_data.csv)
-
-# In[ ]:
-
-
-
-
+# ---------------------------------------------------------------------------
+# 9. Data Preparation Summary
+# ---------------------------------------------------------------------------
+# The preprocessed_crimes_data.csv contains:
+#   - Rows   : ~2M+ crime records
+#   - Columns: 7 (6 features + 1 target)
+#   - Target : Crime_Type — 36 unique crime categories (integer-encoded)
+#
+# This dataset is split 70/20/10 (train/test/val) in each model training script.
+print("\nFinal dataset summary:")
+print(data_selected.describe())
